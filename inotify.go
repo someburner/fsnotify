@@ -91,11 +91,14 @@ func (w *Watcher) Close() error {
 
 const AllEvents = unix.IN_MOVED_TO | unix.IN_MOVED_FROM | unix.IN_CREATE |
 	unix.IN_ATTRIB | unix.IN_MODIFY | unix.IN_MOVE_SELF | unix.IN_DELETE |
-	unix.IN_DELETE_SELF | unix.IN_CLOSE_WRITE
+	unix.IN_DELETE_SELF | unix.IN_CLOSE_WRITE | unix.IN_ACCESS | unix.IN_OPEN
 
 // Count returns the number of watches
 func (w *Watcher) Count() int {
-	return len(w.watches)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ct := len(w.watches)
+	return ct
 }
 
 // Add starts watching the named file or directory (non-recursively).
@@ -223,6 +226,7 @@ func (w *Watcher) readEvents() {
 			return
 		}
 
+		// if n < 16 .. then not a valid event?
 		if n < unix.SizeofInotifyEvent {
 			var err error
 			if n == 0 {
@@ -243,15 +247,15 @@ func (w *Watcher) readEvents() {
 			continue
 		}
 
-		var offset uint32
+		var offset uint32 = 0
 		// We don't know how many events we just read into the buffer
-		// While the offset points to at least one whole event...
-		for offset <= uint32(n-unix.SizeofInotifyEvent) {
+		// While the offset points to at least one whole event
+		for offset < uint32(n-unix.SizeofInotifyEvent) {
 			// Point "raw" to the event in the buffer
 			raw := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
 
 			mask := uint32(raw.Mask)
-			nameLen := uint32(raw.Len)
+			nameLen := uint32(raw.Len) // NOTE: includes null byte(s)
 
 			if mask&unix.IN_Q_OVERFLOW != 0 {
 				select {
@@ -277,19 +281,24 @@ func (w *Watcher) readEvents() {
 			}
 			w.mu.Unlock()
 
+			var event Event
 			if nameLen > 0 {
 				// Point "bytes" at the first byte of the filename
 				bytes := (*[unix.PathMax]byte)(unsafe.Pointer(&buf[offset+unix.SizeofInotifyEvent]))[:nameLen:nameLen]
+				// "This filename is null-terminated, and may include further null
+				// bytes ('\0') to align subsequent reads to a suitable address boundary."
 				// The filename is padded with NULL bytes. TrimRight() gets rid of those.
 				name += "/" + strings.TrimRight(string(bytes[0:nameLen]), "\000")
+				event = newEvent(name, mask)
+			} else {
+				event = newEvent("???", 0)
 			}
-
-			event := newEvent(name, mask)
 
 			// Send the events that are not ignored on the events channel
 			if !event.ignoreLinux(mask) {
 				select {
 				case w.Events <- event:
+					break
 				case <-w.done:
 					return
 				}
@@ -315,6 +324,9 @@ func (e *Event) ignoreLinux(mask uint32) bool {
 	// *Note*: this was put in place because it was seen that a MODIFY
 	// event was sent after the DELETE. This ignores that MODIFY and
 	// assumes a DELETE will come or has come if the file doesn't exist.
+	// A CHMOD event (triggered by IN_MODIFY) can arrive when an open file is
+	// deleted.  In that case the DELETE event is defered until all open
+	// handles for the file are closed.
 	if !(e.Op&Remove == Remove || e.Op&Rename == Rename) {
 		_, statErr := os.Lstat(e.Name)
 		return os.IsNotExist(statErr)
@@ -334,7 +346,11 @@ func (e *Event) IsDir() (bool, error) {
 func newEvent(name string, mask uint32) Event {
 	e := Event{Name: name}
 	if mask&unix.IN_CREATE == unix.IN_CREATE || mask&unix.IN_MOVED_TO == unix.IN_MOVED_TO {
-		e.Op |= Create
+		if mask&unix.IN_ISDIR == unix.IN_ISDIR {
+			e.Op |= CreateDir
+		} else {
+			e.Op |= Create
+		}
 	}
 	if mask&unix.IN_DELETE_SELF == unix.IN_DELETE_SELF || mask&unix.IN_DELETE == unix.IN_DELETE {
 		e.Op |= Remove
@@ -351,6 +367,12 @@ func newEvent(name string, mask uint32) Event {
 	if mask&unix.IN_CLOSE_WRITE == unix.IN_CLOSE_WRITE {
 		e.Op |= CloseWrite
 	}
+	if mask&unix.IN_ACCESS == unix.IN_ACCESS {
+		e.Op |= Access
+	}
+	if mask&unix.IN_OPEN == unix.IN_OPEN {
+		e.Op |= Open
+	}
 	return e
 }
 
@@ -358,6 +380,9 @@ func OpToMask(op Op) uint32 {
 	var flags uint32
 	if op&Create == Create {
 		flags |= unix.IN_CREATE | unix.IN_MOVED_TO
+	}
+	if op&CreateDir == CreateDir {
+		flags |= unix.IN_CREATE | unix.IN_MOVED_TO | unix.IN_ISDIR
 	}
 	if op&Remove == Remove {
 		flags |= unix.IN_DELETE_SELF | unix.IN_DELETE
@@ -371,12 +396,12 @@ func OpToMask(op Op) uint32 {
 	if op&Chmod == Chmod {
 		flags |= unix.IN_ATTRIB
 	}
-	// if op&Open == Open {
-	// 	flags |= unix.IN_OPEN
-	// }
-	// if op&Access == Access {
-	// 	flags |= unix.IN_ACCESS
-	// }
+	if op&Open == Open {
+		flags |= unix.IN_OPEN
+	}
+	if op&Access == Access {
+		flags |= unix.IN_ACCESS
+	}
 	if op&CloseWrite == CloseWrite {
 		flags |= unix.IN_CLOSE_WRITE
 	}

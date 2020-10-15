@@ -25,19 +25,26 @@ type Op uint32
 // These are the generalized file operations that can trigger a notification.
 const (
 	Create Op = 1 << iota
+	CreateDir
 	Write
 	Remove
 	Rename
 	Chmod
+	Open
+	Access
 	CloseWrite
 )
 
 func (op Op) String() string {
 	// Use a buffer for efficient string concatenation
-	var buffer bytes.Buffer
+	buf := make([]byte, 96)
+	var buffer = bytes.NewBuffer(buf)
 
 	if op&Create == Create {
 		buffer.WriteString("|CREATE")
+	}
+	if op&CreateDir == CreateDir {
+		buffer.WriteString("|CREATEDIR")
 	}
 	if op&Remove == Remove {
 		buffer.WriteString("|REMOVE")
@@ -51,8 +58,14 @@ func (op Op) String() string {
 	if op&Chmod == Chmod {
 		buffer.WriteString("|CHMOD")
 	}
+	if op&Access == Access {
+		buffer.WriteString("|ACCESS")
+	}
+	if op&Open == Open {
+		buffer.WriteString("|OPEN")
+	}
 	if op&CloseWrite == CloseWrite {
-		buffer.WriteString("|CLOSE_WRITE")
+		buffer.WriteString("|CLOSEWR")
 	}
 	if buffer.Len() == 0 {
 		return ""
