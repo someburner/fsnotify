@@ -102,7 +102,7 @@ func (w *Watcher) Count() int {
 }
 
 // Add starts watching the named file or directory (non-recursively).
-func (w *Watcher) Add(name string) error {
+func (w *Watcher) Add(name string, isDir bool) error {
 	name = filepath.Clean(name)
 	if w.isClosed() {
 		return errors.New("inotify instance already closed")
@@ -115,6 +115,12 @@ func (w *Watcher) Add(name string) error {
 	watchEntry := w.watches[name]
 	if watchEntry != nil {
 		flags |= watchEntry.flags | unix.IN_MASK_ADD
+		if isDir == true {
+			// Watch pathname only if it is a directory. Using this flag provides
+			// an application with a race-free way of ensuring that the monitored
+			// object is a directory
+			flags |= unix.IN_ONLYDIR
+		}
 	}
 	wd, errno := unix.InotifyAddWatch(w.fd, name, flags)
 	if wd == -1 {
@@ -130,6 +136,14 @@ func (w *Watcher) Add(name string) error {
 	}
 
 	return nil
+}
+
+func (w *Watcher) AddDir(name string) error {
+	return w.Add(name, true)
+}
+
+func (w *Watcher) AddFile(name string) error {
+	return w.Add(name, false)
 }
 
 // Remove stops watching the named file or directory (non-recursively).
