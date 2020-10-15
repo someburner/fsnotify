@@ -93,6 +93,11 @@ const AllEvents = unix.IN_MOVED_TO | unix.IN_MOVED_FROM | unix.IN_CREATE |
 	unix.IN_ATTRIB | unix.IN_MODIFY | unix.IN_MOVE_SELF | unix.IN_DELETE |
 	unix.IN_DELETE_SELF | unix.IN_CLOSE_WRITE
 
+// Count returns the number of watches
+func (w *Watcher) Count() int {
+	return len(w.watches)
+}
+
 // Add starts watching the named file or directory (non-recursively).
 func (w *Watcher) Add(name string) error {
 	name = filepath.Clean(name)
