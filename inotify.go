@@ -96,7 +96,8 @@ func (w *Watcher) Add(name string) error {
 
 	const agnosticEvents = unix.IN_MOVED_TO | unix.IN_MOVED_FROM |
 		unix.IN_CREATE | unix.IN_ATTRIB | unix.IN_MODIFY |
-		unix.IN_MOVE_SELF | unix.IN_DELETE | unix.IN_DELETE_SELF
+		unix.IN_MOVE_SELF | unix.IN_DELETE | unix.IN_DELETE_SELF |
+		unix.IN_CLOSE_WRITE
 
 	var flags uint32 = agnosticEvents
 
@@ -315,6 +316,25 @@ func (e *Event) ignoreLinux(mask uint32) bool {
 	return false
 }
 
+func (e *Event) IsDir() (bool, error) {
+	info, err := os.Lstat(e.Name)
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
+}
+
+func pathExists(path string, wantDirs bool) bool {
+	if s, err := os.Stat(path); err == nil {
+		if wantDirs && s.IsDir() {
+			return true
+		} else if !wantDirs && !s.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 // newEvent returns an platform-independent Event based on an inotify mask.
 func newEvent(name string, mask uint32) Event {
 	e := Event{Name: name}
@@ -332,6 +352,9 @@ func newEvent(name string, mask uint32) Event {
 	}
 	if mask&unix.IN_ATTRIB == unix.IN_ATTRIB {
 		e.Op |= Chmod
+	}
+	if mask&unix.IN_CLOSE_WRITE == unix.IN_CLOSE_WRITE {
+		e.Op |= CloseWrite
 	}
 	return e
 }
