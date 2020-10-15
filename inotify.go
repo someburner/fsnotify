@@ -27,13 +27,14 @@ type Watcher struct {
 	fd       int
 	poller   *fdPoller
 	watches  map[string]*watch // Map of inotify watches (key: path)
-	paths    map[int]string    // Map of watched paths (key: watch descriptor)
-	done     chan struct{}     // Channel for sending a "quit message" to the reader goroutine
-	doneResp chan struct{}     // Channel to respond to Close
+	OpFilter Op
+	paths    map[int]string // Map of watched paths (key: watch descriptor)
+	done     chan struct{}  // Channel for sending a "quit message" to the reader goroutine
+	doneResp chan struct{}  // Channel to respond to Close
 }
 
 // NewWatcher establishes a new watcher with the underlying OS and begins waiting for events.
-func NewWatcher() (*Watcher, error) {
+func NewWatcher(filter Op) (*Watcher, error) {
 	// Create inotify fd
 	fd, errno := unix.InotifyInit1(unix.IN_CLOEXEC)
 	if fd == -1 {
@@ -49,6 +50,7 @@ func NewWatcher() (*Watcher, error) {
 		fd:       fd,
 		poller:   poller,
 		watches:  make(map[string]*watch),
+		OpFilter: filter,
 		paths:    make(map[int]string),
 		Events:   make(chan Event),
 		Errors:   make(chan error),
@@ -87,6 +89,10 @@ func (w *Watcher) Close() error {
 	return nil
 }
 
+const AllEvents = unix.IN_MOVED_TO | unix.IN_MOVED_FROM | unix.IN_CREATE |
+	unix.IN_ATTRIB | unix.IN_MODIFY | unix.IN_MOVE_SELF | unix.IN_DELETE |
+	unix.IN_DELETE_SELF | unix.IN_CLOSE_WRITE
+
 // Add starts watching the named file or directory (non-recursively).
 func (w *Watcher) Add(name string) error {
 	name = filepath.Clean(name)
@@ -94,12 +100,7 @@ func (w *Watcher) Add(name string) error {
 		return errors.New("inotify instance already closed")
 	}
 
-	const agnosticEvents = unix.IN_MOVED_TO | unix.IN_MOVED_FROM |
-		unix.IN_CREATE | unix.IN_ATTRIB | unix.IN_MODIFY |
-		unix.IN_MOVE_SELF | unix.IN_DELETE | unix.IN_DELETE_SELF |
-		unix.IN_CLOSE_WRITE
-
-	var flags uint32 = agnosticEvents
+	var flags uint32 = OpToMask(w.OpFilter)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -324,17 +325,6 @@ func (e *Event) IsDir() (bool, error) {
 	return info.IsDir(), nil
 }
 
-func pathExists(path string, wantDirs bool) bool {
-	if s, err := os.Stat(path); err == nil {
-		if wantDirs && s.IsDir() {
-			return true
-		} else if !wantDirs && !s.IsDir() {
-			return true
-		}
-	}
-	return false
-}
-
 // newEvent returns an platform-independent Event based on an inotify mask.
 func newEvent(name string, mask uint32) Event {
 	e := Event{Name: name}
@@ -357,4 +347,33 @@ func newEvent(name string, mask uint32) Event {
 		e.Op |= CloseWrite
 	}
 	return e
+}
+
+func OpToMask(op Op) uint32 {
+	var flags uint32
+	if op&Create == Create {
+		flags |= unix.IN_CREATE | unix.IN_MOVED_TO
+	}
+	if op&Remove == Remove {
+		flags |= unix.IN_DELETE_SELF | unix.IN_DELETE
+	}
+	if op&Write == Write {
+		flags |= unix.IN_MODIFY
+	}
+	if op&Rename == Rename {
+		flags |= unix.IN_MOVE_SELF | unix.IN_MOVED_FROM
+	}
+	if op&Chmod == Chmod {
+		flags |= unix.IN_ATTRIB
+	}
+	// if op&Open == Open {
+	// 	flags |= unix.IN_OPEN
+	// }
+	// if op&Access == Access {
+	// 	flags |= unix.IN_ACCESS
+	// }
+	if op&CloseWrite == CloseWrite {
+		flags |= unix.IN_CLOSE_WRITE
+	}
+	return flags
 }
